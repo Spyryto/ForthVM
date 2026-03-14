@@ -198,8 +198,71 @@ function makeVM() {
   }, true);
 
   // ---- Outer interpreter (tokenizer + : ;) ----
+    function tokenize(src) {
+    const tokens = [];
+    const n = src.length;
+    let i = 0;
+
+    const isWS = (c) => c === " " || c === "\t" || c === "\r" || c === "\n";
+
+    while (i < n) {
+      // skip whitespace
+      while (i < n && isWS(src[i])) i++;
+      if (i >= n) break;
+
+      // backslash comment: \ ... end of line
+      if (src[i] === "\\") {
+        while (i < n && src[i] !== "\n") i++;
+        continue;
+      }
+      // double-slash comment: // ... end of line
+      if (src[i] === "/" && i + 1 < n && src[i + 1] === "/") {
+        while (i < n && src[i] !== "\n") i++;
+        continue;
+      }
+
+      // paren comment: ( ... )  (not nested)
+      if (src[i] === "(") {
+        i++; // consume '('
+        while (i < n && src[i] !== ")") i++;
+        if (i < n && src[i] === ")") i++; // consume ')'
+        continue;
+      }
+
+      // quoted string: " ... "  (supports \" and \\)
+      if (src[i] === '"') {
+        i++; // consume opening "
+        let s = "";
+        while (i < n) {
+          const c = src[i++];
+          if (c === '"') break;
+          if (c === "\\" && i < n) {
+            const next = src[i++];
+            if (next === '"' || next === "\\") s += next;
+            else { s += "\\" + next; }
+          } else {
+            s += c;
+          }
+        }
+        tokens.push(`"${s}"`); // keep quotes so interpreter can distinguish if desired
+        continue;
+      }
+
+      // regular token: read until whitespace or comment start
+      let tok = "";
+      while (i < n && !isWS(src[i])) {
+        // allow comments to start only when they are the first char of a token,
+        // so inside tokens like "x\y" won't be treated as comment.
+        tok += src[i++];
+      }
+      if (tok) tokens.push(tok);
+    }
+
+    return tokens;
+  }
+
   function evalForth(src) {
-    const tokens = src.trim().split(/\s+/).filter(Boolean);
+    const tokens = tokenize(src);
     for (let i = 0; i < tokens.length; i++) {
       const t = tokens[i];
 
@@ -211,7 +274,6 @@ function makeVM() {
       }
 
       if (t === ";") {
-        // compile exit
         current.code.push(exitToEnd);
         compiling = false;
         current = null;
@@ -232,3 +294,5 @@ F.eval(`: sq dup * ; 5 sq .`);
 F.eval(`: 1- 1 - ; : countDown begin dup . 1- dup 0= until drop ; 5 countDown`);
 F.eval(`: abs dup 0< if negate then ; 0 2 - abs .`);
 F.eval(`: sign dup 0= if drop 0 else 0< if -1 else 1 then then ; 0 3 - sign .`);
+F.eval(String.raw`\ questo è un commento a fine riga
+: sq ( n -- n^2 ) dup * ; 7 sq .`)
