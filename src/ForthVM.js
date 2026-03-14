@@ -38,13 +38,23 @@ function makeVM() {
 
   // Helper: call a word (primitive or colon)
   function execWord(w) {
-    const prev = vm.currentWord;
+    const prevWord = vm.currentWord;
+    const prevDef = vm.currentDefiner;
+
     vm.currentWord = w;
+
     try {
-      if (typeof w.code === "function") w.code(vm);
-      else run(w.code);
+      if (typeof w.code === "function") {
+        // primitive: do NOT change currentDefiner
+        w.code(vm);
+      } else {
+        // colon: this word becomes the current definer for the duration
+        vm.currentDefiner = w;
+        run(w.code);
+      }
     } finally {
-      vm.currentWord = prev;
+      vm.currentWord = prevWord;
+      vm.currentDefiner = prevDef;
     }
   }
 
@@ -64,8 +74,11 @@ function makeVM() {
       return inp.tokens[j];
     },
 
-    // currently executing word (set by execWord wrapper; patch later if you already did it)
+    // word currently being executed (changes also for primitives)
     currentWord: null,
+
+    // colon-word currently "owning" the execution (stable through primitives)
+    currentDefiner: null,
 
     mem,
     get here() { return here; },
@@ -184,6 +197,106 @@ function makeVM() {
     vm.mem[addr] = x;
   });
 
+    // addressing helpers (cell = 1 for now, but keeps the model Forth-ish)
+  defPrim("cells", (vm) => { vm.push(vm.pop()); });
+  defPrim("cell+", (vm) => { vm.push(vm.pop() + 1); });
+
+  defPrim("+!", (vm) => {
+    const addr = vm.pop();
+    const n = vm.pop();
+    vm.mem[addr] = (vm.mem[addr] ?? 0) + n;
+  });
+
+  // xt (execution token) + execute
+  defPrim("execute", (vm) => {
+    const xt = vm.pop();
+    if (!xt || typeof xt !== "object" || !xt.name) throw new Error("execute expects an XT (word)");
+    vm.execWord(xt);
+  });
+
+  // tick: ' name  ( -- xt )  (compiles xt as literal when compiling)
+  defPrim("'", (vm) => {
+    const name = vm.nextToken();
+    const w = vm.dict.get(name);
+    if (!w) throw new Error(`Unknown word: ${name}`);
+
+    if (compiling) {
+      compileLit(w);   // compile xt as a literal cell
+    } else {
+      vm.push(w);
+    }
+  }, true);
+
+  // debug / introspection
+  defPrim(".s", (vm) => {
+    console.log("<" + vm.DS.length + "> " + vm.DS.map(x => {
+      if (x && typeof x === "object" && x.name) return `'${x.name}`;
+      return String(x);
+    }).join(" "));
+  });
+
+  defPrim("words", (vm) => {
+    console.log(Array.from(vm.dict.keys()).sort().join(" "));
+  });
+
+  defPrim("see", (vm) => {
+    const name = vm.nextToken();
+    const w = vm.dict.get(name);
+    if (!w) throw new Error(`Unknown word: ${name}`);
+
+    const tagCell = (cell) => {
+      if (cell === callWordOp) return "call";
+      if (cell === OP.lit) return "lit";
+      if (cell === OP.branch) return "branch";
+      if (cell === OP.zbranch) return "0branch";
+      if (cell === exitToEnd) return "exit";
+      if (typeof cell === "function") return "fn";
+      if (cell && typeof cell === "object" && cell.name) return `'${cell.name}`;
+      return JSON.stringify(cell);
+    };
+
+    if (typeof w.code === "function") {
+      console.log(`${w.name}  (primitive)`);
+      return;
+    }
+
+    console.log(`: ${w.name}`);
+    const code = w.code;
+    for (let i = 0; i < code.length; i++) {
+      const c = code[i];
+
+      // decode common threaded patterns
+      if (c === callWordOp) {
+        const ww = code[i + 1];
+        console.log("  " + (ww && ww.name ? ww.name : "<bad-xt>"));
+        i += 1;
+        continue;
+      }
+
+      if (c === OP.lit) {
+        console.log("  lit " + tagCell(code[i + 1]));
+        i += 1;
+        continue;
+      }
+
+      if (c === OP.branch) {
+        console.log("  branch -> " + code[i + 1]);
+        i += 1;
+        continue;
+      }
+
+      if (c === OP.zbranch) {
+        console.log("  0branch -> " + code[i + 1]);
+        i += 1;
+        continue;
+      }
+
+      console.log("  " + tagCell(c));
+    }
+    console.log(";");
+    if (w.definerDoes) console.log(`(has DOES> template: ${w.definerDoes.length} cells)`);
+  });
+
   defPrim("1+", (vm) => { const a=vm.pop(); vm.push(a+1); });
   defPrim("1-", (vm) => { const a=vm.pop(); vm.push(a-1); });
   defPrim("negate", (vm) => { const a=vm.pop(); vm.push(-a); });
@@ -220,7 +333,7 @@ function makeVM() {
     };
 
     // If we're executing a defining word that has a DOES> template, attach it
-    const definer = vm.currentWord;
+    const definer = vm.currentDefiner;
     if (definer && definer.definerDoes) {
       w.does = definer.definerDoes;
     }
@@ -300,7 +413,7 @@ function makeVM() {
   }, true);
 
   // ---- Outer interpreter (tokenizer + : ;) ----
-    function tokenize(src) {
+  function tokenize(src) {
     const tokens = [];
     const n = src.length;
     let i = 0;
@@ -419,13 +532,21 @@ F.eval(`: abs dup 0< if negate then ; 0 2 - abs .`);
 F.eval(`: sign dup 0= if drop 0 else 0< if -1 else 1 then then ; 0 3 - sign .`);
 F.eval(String.raw`\ questo è un commento a fine riga
 : sq ( n -- n^2 ) dup * ; 7 sq .`)
-F.eval(`
-: const  create , does> @ ;
-5 const five
-five .
-`);
+// F.eval(`
+// : const  create , does> @ ;
+// 5 const five
+// five .
+// `);
 F.eval(`
 : 2const  create , , does> dup @ swap 1+ @ ;
 10 20 2const ten-twenty
 ten-twenty . .   \\ dovrebbe stampare 20 poi 10 (dipende dall'ordine che vuoi)
+`);
+F.eval(`
+: const create , does> @ ;
+5 const five
+' five execute .
+.s
+words
+see const
 `);
