@@ -294,7 +294,42 @@ function makeVM() {
       console.log("  " + tagCell(c));
     }
     console.log(";");
-    if (w.definerDoes) console.log(`(has DOES> template: ${w.definerDoes.length} cells)`);
+    if (w.definerDoes) {
+      console.log(`(has DOES> template: ${w.definerDoes.length} cells)`);
+      console.log("does>  (template)");
+      const code2 = w.definerDoes;
+      for (let i = 0; i < code2.length; i++) {
+        const c = code2[i];
+
+        if (c === callWordOp) {
+          const ww = code2[i + 1];
+          console.log("  " + (ww && ww.name ? ww.name : "<bad-xt>"));
+          i += 1;
+          continue;
+        }
+
+        if (c === OP.lit) {
+          console.log("  lit " + tagCell(code2[i + 1]));
+          i += 1;
+          continue;
+        }
+
+        if (c === OP.branch) {
+          console.log("  branch -> " + code2[i + 1]);
+          i += 1;
+          continue;
+        }
+
+        if (c === OP.zbranch) {
+          console.log("  0branch -> " + code2[i + 1]);
+          i += 1;
+          continue;
+        }
+
+        console.log("  " + tagCell(c));
+      }
+      console.log("(end template)");
+    }
   });
 
   defPrim("1+", (vm) => { const a=vm.pop(); vm.push(a+1); });
