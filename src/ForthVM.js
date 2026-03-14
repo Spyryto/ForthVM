@@ -260,6 +260,43 @@ function makeVM() {
     compileCall(w);
   }, true);
 
+    // >mark   ( -- addr )   compile a placeholder cell, return its address
+  // >resolve ( addr -- )  patch placeholder cell with current compile position
+  defPrim(">mark", (vm) => {
+    if (!compiling) throw new Error(">mark outside compilation");
+    const addr = compileTarget.length;
+    compileTarget.push(0);       // placeholder
+    vm.push(addr);
+  }, true);
+
+  defPrim(">resolve", (vm) => {
+    if (!compiling) throw new Error(">resolve outside compilation");
+    const addr = vm.pop();
+    if ((addr|0) !== addr || addr < 0 || addr >= compileTarget.length) {
+      throw new Error(">resolve: bad address");
+    }
+    compileTarget[addr] = compileTarget.length;
+  }, true);
+
+  // sugar: compile 0branch + placeholder and return placeholder address
+  defPrim(">mark0", (vm) => {
+    if (!compiling) throw new Error(">mark0 outside compilation");
+    compileOp(OP.zbranch);
+    const addr = compileTarget.length;
+    compileTarget.push(0);
+    vm.push(addr);
+  }, true);
+
+  // sugar: patch last placeholder (same as >resolve)
+  defPrim(">resolve0", (vm) => {
+    if (!compiling) throw new Error(">resolve0 outside compilation");
+    const addr = vm.pop();
+    if ((addr|0) !== addr || addr < 0 || addr >= compileTarget.length) {
+      throw new Error(">resolve0: bad address");
+    }
+    compileTarget[addr] = compileTarget.length;
+  }, true);
+
   // tick: ' name  ( -- xt )  (compiles xt as literal when compiling)
   defPrim("'", (vm) => {
     const name = vm.nextToken();
@@ -738,4 +775,12 @@ immediate
 bar
 `);
 F.eval(`: ten  [ 7 3 + ] literal ;
-ten . `)
+ten . `);
+F.eval(String.raw`
+  : t
+  1
+  >mark0        \ compila 0branch <placeholder>, lascia addr
+  112 .         \ true-branch body
+  >resolve0     \ patcha target a qui (salto)
+;
+t`)
