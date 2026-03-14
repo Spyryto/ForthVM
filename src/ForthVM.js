@@ -242,14 +242,13 @@ function makeVM() {
     const xt = vm.pop();
     if (!xt || typeof xt !== "object" || !xt.name) throw new Error("compile, expects an XT (word)");
     compileCall(xt);
-  });
+  }, true);
 
-  // literal  ( x -- )  compile stack value as a literal into current definition
   defPrim("literal", (vm) => {
     if (!compiling) throw new Error("literal outside compilation");
     const x = vm.pop();
     compileLit(x);
-  });
+  }, true);
 
   // POSTPONE: compile the compilation semantics of the next word token
   // In our model: always compile a call to the word, even if it's immediate.
@@ -734,6 +733,9 @@ hi
 `);
 F.eval(`
 : foo  111 . ;
-immediate foo`);
+immediate
+: bar  foo 222 . ;
+bar
+`);
 F.eval(`: ten  [ 7 3 + ] literal ;
 ten . `)
