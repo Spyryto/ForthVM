@@ -153,12 +153,6 @@ function makeVM() {
       else execWord(w);
       return;
     }
-    if (isQuotedStringToken(tok)) {
-      const s = unquoteToken(tok);
-      if (compiling) compileLit(s);
-      else push(s);
-      return;
-    }
     // number?
     const n = Number(tok);
     if (!Number.isNaN(n)) {
@@ -467,35 +461,38 @@ function makeVM() {
     current.code[c.addr] = current.code.length;
   }, true);
 
-    // s" ...": push a JS string (compiled as literal in colon defs)
-  defPrim('s"', (vm) => {
+  function takeForthStringToken(vm, who) {
     const t = vm.nextToken();
-    if (!isQuotedStringToken(t)) throw new Error('s" expects a quoted string token');
-    const s = unquoteToken(t);
+    const p = "\u0000STR:";
+    if (typeof t !== "string" || !t.startsWith(p)) {
+      throw new Error(`${who} expects a Forth string (missing closing ")`);
+    }
+    return t.slice(p.length);
+  }
 
+  // s" ...": ( -- s )  (compiles as literal in colon defs)
+  defPrim('s"', (vm) => {
+    const s = takeForthStringToken(vm, 's"');
     if (compiling) compileLit(s);
     else vm.push(s);
   }, true);
 
-  // ." ...": print string (compile prints when compiling)
+  // ." ...": print string (compiles: push string + type)
   defPrim('."', (vm) => {
-    const t = vm.nextToken();
-    if (!isQuotedStringToken(t)) throw new Error('." expects a quoted string token');
-    const s = unquoteToken(t);
-
+    const s = takeForthStringToken(vm, '."');
     if (compiling) {
       compileLit(s);
-      compileCall(vm.dict.get("type"));
+      const typeW = vm.dict.get("type");
+      if (!typeW) throw new Error('Missing word: type');
+      compileCall(typeW);
     } else {
       console.log(s);
     }
   }, true);
 
-  // type ( s -- ): print string without newline (best-effort)
+  // type ( s -- ): print string (newline is console-dependent)
   defPrim("type", (vm) => {
     const s = vm.pop();
-    // Scriptable/GAS-friendly: console.log always adds newline;
-    // here we just log; upgrade later if you add an output buffer.
     console.log(String(s));
   });
 
@@ -555,9 +552,19 @@ function makeVM() {
         continue;
       }
 
-      // quoted string: " ... "  (supports \" and \\)
-      if (src[i] === '"') {
-        i++; // consume opening "
+      // Forth-style strings for s" and ."
+      // We tokenize them as:  [ 's"' | '."' ]  [ \u0000STR:<content> ]
+      if (
+        (src[i] === "s" && i + 1 < n && src[i + 1] === '"') ||
+        (src[i] === "." && i + 1 < n && src[i + 1] === '"')
+      ) {
+        const head = src[i] === "s" ? 's"' : '."';
+        tokens.push(head);
+        i += 2; // consume s" or ."
+
+        // optional single whitespace after s"/."
+        if (i < n && isWS(src[i])) i++;
+
         let s = "";
         while (i < n) {
           const c = src[i++];
@@ -570,7 +577,8 @@ function makeVM() {
             s += c;
           }
         }
-        tokens.push(`"${s}"`); // keep quotes so interpreter can distinguish if desired
+
+        tokens.push("\u0000STR:" + s);
         continue;
       }
 
@@ -585,13 +593,6 @@ function makeVM() {
     }
 
     return tokens;
-  }
-
-  function isQuotedStringToken(t) {
-    return t.length >= 2 && t[0] === '"' && t[t.length - 1] === '"';
-  }
-  function unquoteToken(t) {
-    return t.slice(1, -1);
   }
 
   function evalForth(src) {
