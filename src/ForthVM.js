@@ -153,6 +153,12 @@ function makeVM() {
       else execWord(w);
       return;
     }
+    if (isQuotedStringToken(tok)) {
+      const s = unquoteToken(tok);
+      if (compiling) compileLit(s);
+      else push(s);
+      return;
+    }
     // number?
     const n = Number(tok);
     if (!Number.isNaN(n)) {
@@ -383,6 +389,44 @@ function makeVM() {
     dict.set(name, w);
   });
 
+    // built-ins built on CREATE...DOES>
+  // constant: ( n -- )  constant NAME   ; later: NAME ( -- n )
+  defPrim("constant", (vm) => {
+    const name = vm.nextToken();
+    const n = vm.pop();
+
+    const pfa = vm.here;
+    vm.mem[pfa] = n;
+    vm.here = pfa + 1;
+
+    const w = {
+      name,
+      immediate: false,
+      pfa,
+      code: (vm2) => { vm2.push(vm2.mem[pfa] ?? 0); },
+    };
+
+    vm.dict.set(name, w);
+  });
+
+  // variable: ( -- )  variable NAME     ; later: NAME ( -- addr )
+  defPrim("variable", (vm) => {
+    const name = vm.nextToken();
+
+    const pfa = vm.here;
+    vm.mem[pfa] = 0;
+    vm.here = pfa + 1;
+
+    const w = {
+      name,
+      immediate: false,
+      pfa,
+      code: (vm2) => { vm2.push(pfa); },
+    };
+
+    vm.dict.set(name, w);
+  });
+
   // Control flow (immediate compile-time words)
   // if ... then  => zbranch <patch> ... <patch target>
   defPrim("if", (vm) => {
@@ -422,6 +466,38 @@ function makeVM() {
     // patch the most recent placeholder (IF's 0branch or ELSE's branch)
     current.code[c.addr] = current.code.length;
   }, true);
+
+    // s" ...": push a JS string (compiled as literal in colon defs)
+  defPrim('s"', (vm) => {
+    const t = vm.nextToken();
+    if (!isQuotedStringToken(t)) throw new Error('s" expects a quoted string token');
+    const s = unquoteToken(t);
+
+    if (compiling) compileLit(s);
+    else vm.push(s);
+  }, true);
+
+  // ." ...": print string (compile prints when compiling)
+  defPrim('."', (vm) => {
+    const t = vm.nextToken();
+    if (!isQuotedStringToken(t)) throw new Error('." expects a quoted string token');
+    const s = unquoteToken(t);
+
+    if (compiling) {
+      compileLit(s);
+      compileCall(vm.dict.get("type"));
+    } else {
+      console.log(s);
+    }
+  }, true);
+
+  // type ( s -- ): print string without newline (best-effort)
+  defPrim("type", (vm) => {
+    const s = vm.pop();
+    // Scriptable/GAS-friendly: console.log always adds newline;
+    // here we just log; upgrade later if you add an output buffer.
+    console.log(String(s));
+  });
 
   defPrim("does>", (vm) => {
     if (!compiling) throw new Error("does> outside compilation");
@@ -511,6 +587,13 @@ function makeVM() {
     return tokens;
   }
 
+  function isQuotedStringToken(t) {
+    return t.length >= 2 && t[0] === '"' && t[t.length - 1] === '"';
+  }
+  function unquoteToken(t) {
+    return t.slice(1, -1);
+  }
+
   function evalForth(src) {
     const tokens = tokenize(src);
     vm.input = { tokens, i: 0 };
@@ -584,4 +667,20 @@ F.eval(`
 .s
 words
 see const
+`);
+F.eval(`
+123 constant K
+K .          \\ 123
+
+variable X
+10 X !
+X @ .        \\ 10
+`);
+F.eval(`
+." ciao mondo"
+s" hello" type
+`);
+F.eval(`
+: hi  ." ciao da dentro una colon" ;
+hi
 `);
