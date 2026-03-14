@@ -117,11 +117,28 @@ function makeVM() {
   defPrim("swap", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(b); vm.push(a); });
   defPrim("over", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a); vm.push(b); vm.push(a); });
 
-  defPrim("+", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a+b); });
+    defPrim("+", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a+b); });
   defPrim("-", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a-b); });
   defPrim("*", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a*b); });
+  defPrim("/", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push((a/b)|0); }); // divisione intera semplice
+  defPrim("mod", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a % b); });
+
+  defPrim("1+", (vm) => { const a=vm.pop(); vm.push(a+1); });
+  defPrim("1-", (vm) => { const a=vm.pop(); vm.push(a-1); });
+  defPrim("negate", (vm) => { const a=vm.pop(); vm.push(-a); });
+
   defPrim("=", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a===b ? 1 : 0); });
   defPrim("0=", (vm) => { const a=vm.pop(); vm.push(a===0 ? 1 : 0); });
+  defPrim("0<", (vm) => { const a=vm.pop(); vm.push(a < 0 ? 1 : 0); });
+  defPrim("<", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a < b ? 1 : 0); });
+  defPrim(">", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a > b ? 1 : 0); });
+
+  defPrim(">r", (vm) => { vm.rpush(vm.pop()); });
+  defPrim("r>", (vm) => { vm.push(vm.rpop()); });
+  defPrim("r@", (vm) => {
+    if (!vm.RS.length) throw new Error("return stack underflow");
+    vm.push(vm.RS[vm.RS.length - 1]);
+  });
 
   // ":" starts a colon definition (immediate)
   defPrim(":", (vm) => { throw new Error(": is handled by outer interpreter"); }, true);
@@ -213,5 +230,5 @@ function makeVM() {
 const F = makeVM();
 F.eval(`: sq dup * ; 5 sq .`);
 F.eval(`: 1- 1 - ; : countDown begin dup . 1- dup 0= until drop ; 5 countDown`);
-// F.eval(`: abs dup 0< if negate then ;`);
-// F.eval(`: sign dup 0= if drop 0 else 0< if -1 else 1 then then ;`);
+F.eval(`: abs dup 0< if negate then ; 0 2 - abs .`);
+F.eval(`: sign dup 0= if drop 0 else 0< if -1 else 1 then then ; 0 3 - sign .`);
