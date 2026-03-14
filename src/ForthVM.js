@@ -22,7 +22,8 @@ function makeVM() {
     let ip = 0;
     while (ip < code.length) {
       const op = code[ip++];
-      op(vm, code, () => ip, (v) => { ip = v; });
+      if (op.length <= 1) op(vm);
+      else op(vm, code, () => ip, (v) => { ip = v; });
     }
   }
 
@@ -38,8 +39,6 @@ function makeVM() {
   // ---- Ops for colon-threaded code ----
   // Each op gets (vm, code, getIP, setIP)
   const OP = {
-    call: (w) => (vm) => execWord(w),
-
     lit: (vm, code, getIP, setIP) => {
       const ip = getIP();
       vm.push(code[ip]);       // next cell is a literal number
@@ -59,13 +58,6 @@ function makeVM() {
       setIP(flag ? ip + 1 : target);
     },
 
-    exit: (vm) => {
-      // implemented by setting ip past end: simplest trick is throw/catch,
-      // but here we avoid it by relying on run() loop end:
-      // we'll compile exit as a special op that jumps to end
-      // (needs code length; easiest: close over a setter)
-      throw new Error("EXIT should be patched with exitToEnd");
-    },
   };
 
   // Better EXIT op that knows the current code length at runtime:
@@ -91,8 +83,14 @@ function makeVM() {
     current.code.push(OP.lit, n);
   }
   function compileCall(word) {
-    // calling a word inside colon def means compiling an op that calls it
-    current.code.push((vm) => execWord(word));
+    // store the word object as a "cell" after a generic op
+    current.code.push(callWordOp, word);
+  }
+  function callWordOp(vm, code, getIP, setIP) {
+    const ip = getIP();
+    const w = code[ip];
+    setIP(ip + 1);
+    execWord(w);
   }
 
   function interpretToken(tok) {
@@ -192,5 +190,3 @@ function makeVM() {
 const F = makeVM();
 F.eval(`: sq dup * ; 5 sq .`);
 F.eval(`: 1- 1 - ; : countDown begin dup . 1- dup 0= until drop ; 5 countDown`);
-
-
