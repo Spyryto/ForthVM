@@ -8,6 +8,15 @@ function makeVM() {
   const RS = [];
   const dict = new Map();
 
+  // data space (very small, but enough for create/does>)
+  const mem = [];
+  let here = 0;
+
+  function allot(n) {
+    if ((n|0) !== n || n < 0) throw new Error("allot expects non-negative int");
+    here += n;
+  }
+
   let compiling = false;
   let current = null;          // current word being compiled
   let control = [];            // compile-time control-flow stack (addresses)
@@ -29,12 +38,40 @@ function makeVM() {
 
   // Helper: call a word (primitive or colon)
   function execWord(w) {
-    if (typeof w.code === "function") w.code(vm);
-    else run(w.code);
+    const prev = vm.currentWord;
+    vm.currentWord = w;
+    try {
+      if (typeof w.code === "function") w.code(vm);
+      else run(w.code);
+    } finally {
+      vm.currentWord = prev;
+    }
   }
 
   // ---- Core VM object passed to ops ----
-  const vm = { DS, RS, push, pop, rpush, rpop, dict, execWord };
+    // ---- Core VM object passed to ops ----
+  const vm = {
+    DS, RS, push, pop, rpush, rpop, dict, execWord,
+
+    // input stream (set by evalForth)
+    input: null,
+    nextToken() {
+      const inp = this.input;
+      if (!inp) throw new Error("No input stream");
+      const j = inp.i + 1;
+      if (j >= inp.tokens.length) throw new Error("Unexpected end of input");
+      inp.i = j;
+      return inp.tokens[j];
+    },
+
+    // currently executing word (set by execWord wrapper; patch later if you already did it)
+    currentWord: null,
+
+    mem,
+    get here() { return here; },
+    set here(v) { here = v|0; },
+    allot,
+  };
 
   // ---- Ops for colon-threaded code ----
   // Each op gets (vm, code, getIP, setIP)
@@ -76,16 +113,19 @@ function makeVM() {
   }
 
   // ---- Compiler helpers ----
+  let compileTarget = null; // points to current.code or doesBuf
+  let doesBuf = null;       // array or null
+
   function compileOp(op) {
-    current.code.push(op);
+    compileTarget.push(op);
   }
   function compileLit(n) {
-    current.code.push(OP.lit, n);
+    compileTarget.push(OP.lit, n);
   }
   function compileCall(word) {
-    // store the word object as a "cell" after a generic op
-    current.code.push(callWordOp, word);
+    compileTarget.push(callWordOp, word);
   }
+
   function callWordOp(vm, code, getIP, setIP) {
     const ip = getIP();
     const w = code[ip];
@@ -117,11 +157,32 @@ function makeVM() {
   defPrim("swap", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(b); vm.push(a); });
   defPrim("over", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a); vm.push(b); vm.push(a); });
 
-    defPrim("+", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a+b); });
+  defPrim("+", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a+b); });
   defPrim("-", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a-b); });
   defPrim("*", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a*b); });
   defPrim("/", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push((a/b)|0); }); // divisione intera semplice
   defPrim("mod", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a % b); });
+
+  defPrim("here", (vm) => { vm.push(vm.here); });
+  defPrim("allot", (vm) => { vm.allot(vm.pop()); });
+
+  defPrim(",", (vm) => {
+    const x = vm.pop();
+    const addr = vm.here;
+    vm.mem[addr] = x;
+    vm.here = addr + 1;
+  });
+
+  defPrim("@", (vm) => {
+    const addr = vm.pop();
+    vm.push(vm.mem[addr] ?? 0);
+  });
+
+  defPrim("!", (vm) => {
+    const addr = vm.pop();
+    const x = vm.pop();
+    vm.mem[addr] = x;
+  });
 
   defPrim("1+", (vm) => { const a=vm.pop(); vm.push(a+1); });
   defPrim("1-", (vm) => { const a=vm.pop(); vm.push(a-1); });
@@ -143,6 +204,36 @@ function makeVM() {
   // ":" starts a colon definition (immediate)
   defPrim(":", (vm) => { throw new Error(": is handled by outer interpreter"); }, true);
   defPrim(";", (vm) => { throw new Error("; is handled by outer interpreter"); }, true);
+
+  defPrim("create", (vm) => {
+    const name = vm.nextToken();
+
+    const pfa = vm.here; // parameter field address (HERE at creation time)
+
+    const w = {
+      name,
+      immediate: false,
+      pfa,
+      definerDoes: null, // only used if this word becomes a definer
+      does: null,
+      code: null,
+    };
+
+    // If we're executing a defining word that has a DOES> template, attach it
+    const definer = vm.currentWord;
+    if (definer && definer.definerDoes) {
+      w.does = definer.definerDoes;
+    }
+
+    // runtime semantics of created word:
+    // push PFA, then execute DOES-part if present
+    w.code = (vm2) => {
+      vm2.push(w.pfa);
+      if (w.does) run(w.does);
+    };
+
+    dict.set(name, w);
+  });
 
   // Control flow (immediate compile-time words)
   // if ... then  => zbranch <patch> ... <patch target>
@@ -182,6 +273,17 @@ function makeVM() {
 
     // patch the most recent placeholder (IF's 0branch or ELSE's branch)
     current.code[c.addr] = current.code.length;
+  }, true);
+
+  defPrim("does>", (vm) => {
+    if (!compiling) throw new Error("does> outside compilation");
+
+    // end the create-time part of the defining word
+    compileTarget.push(exitToEnd);
+
+    // start compiling the does-part into a separate buffer
+    doesBuf = [];
+    compileTarget = doesBuf;
   }, true);
 
   defPrim("begin", (vm) => {
@@ -263,26 +365,47 @@ function makeVM() {
 
   function evalForth(src) {
     const tokens = tokenize(src);
-    for (let i = 0; i < tokens.length; i++) {
+    vm.input = { tokens, i: 0 };
+
+    while (vm.input.i < tokens.length) {
+      const i = vm.input.i;
       const t = tokens[i];
 
       if (t === ":") {
-        const name = tokens[++i];
+        const name = vm.nextToken();
         current = defColon(name);
         compiling = true;
+        compileTarget = current.code;
+        doesBuf = null;
+
+        // (compileTarget/doesBuf li aggiungiamo nella PATCH 3)
+        vm.input.i += 1;
         continue;
       }
 
       if (t === ";") {
-        current.code.push(exitToEnd);
+                // finish whichever segment we're compiling
+        compileTarget.push(exitToEnd);
+
+        // if we had DOES>, store template on the defining word
+        if (doesBuf) {
+          current.definerDoes = doesBuf;
+        }
+
         compiling = false;
         current = null;
+        compileTarget = null;
+        doesBuf = null;
+        vm.input.i += 1;
         continue;
       }
 
       interpretToken(t);
+      vm.input.i += 1;
     }
+
     if (compiling) throw new Error("Unterminated definition (missing ;) ");
+    vm.input = null;
   }
 
   return { eval: evalForth, vm };
@@ -296,3 +419,13 @@ F.eval(`: abs dup 0< if negate then ; 0 2 - abs .`);
 F.eval(`: sign dup 0= if drop 0 else 0< if -1 else 1 then then ; 0 3 - sign .`);
 F.eval(String.raw`\ questo è un commento a fine riga
 : sq ( n -- n^2 ) dup * ; 7 sq .`)
+F.eval(`
+: const  create , does> @ ;
+5 const five
+five .
+`);
+F.eval(`
+: 2const  create , , does> dup @ swap 1+ @ ;
+10 20 2const ten-twenty
+ten-twenty . .   \\ dovrebbe stampare 20 poi 10 (dipende dall'ordine che vuoi)
+`);
