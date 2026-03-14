@@ -20,6 +20,9 @@ function makeVM() {
   let compiling = false;
   let current = null;          // current word being compiled
   let control = [];            // compile-time control-flow stack (addresses)
+  let lastDefined = null;      // last word added to dictionary (for IMMEDIATE)
+
+  // compile-time control-flow stack (addresses)
 
   function push(x){ DS.push(x); }
   function pop(){ if (!DS.length) throw new Error("stack underflow"); return DS.pop(); }
@@ -117,11 +120,15 @@ function makeVM() {
 
   // ---- Dictionary helpers ----
   function defPrim(name, fn, immediate=false) {
-    dict.set(name, { name, immediate, code: fn });
+    const w = { name, immediate, code: fn };
+    dict.set(name, w);
+    lastDefined = w;
   }
+
   function defColon(name) {
     const w = { name, immediate: false, code: [] };
     dict.set(name, w);
+    lastDefined = w;
     return w;
   }
 
@@ -213,6 +220,46 @@ function makeVM() {
     if (!xt || typeof xt !== "object" || !xt.name) throw new Error("execute expects an XT (word)");
     vm.execWord(xt);
   });
+
+    // --- Bootstrap kit -------------------------------------------------
+
+  // IMMEDIATE: mark last defined word as immediate
+  defPrim("immediate", (vm) => {
+    if (!lastDefined) throw new Error("immediate: no last defined word");
+    lastDefined.immediate = true;
+  });
+
+  // [ and ]: switch interpreter/compiler state inside a colon definition
+  defPrim("[", (vm) => { compiling = false; }, true);
+  defPrim("]", (vm) => {
+    if (!current) throw new Error("] outside a colon definition");
+    compiling = true;
+  }, true);
+
+  // compile,  ( xt -- )  compile an execution token into current definition
+  defPrim("compile,", (vm) => {
+    if (!compiling) throw new Error("compile, outside compilation");
+    const xt = vm.pop();
+    if (!xt || typeof xt !== "object" || !xt.name) throw new Error("compile, expects an XT (word)");
+    compileCall(xt);
+  });
+
+  // literal  ( x -- )  compile stack value as a literal into current definition
+  defPrim("literal", (vm) => {
+    if (!compiling) throw new Error("literal outside compilation");
+    const x = vm.pop();
+    compileLit(x);
+  });
+
+  // POSTPONE: compile the compilation semantics of the next word token
+  // In our model: always compile a call to the word, even if it's immediate.
+  defPrim("postpone", (vm) => {
+    if (!compiling) throw new Error("postpone outside compilation");
+    const name = vm.nextToken();
+    const w = vm.dict.get(name);
+    if (!w) throw new Error(`Unknown word: ${name}`);
+    compileCall(w);
+  }, true);
 
   // tick: ' name  ( -- xt )  (compiles xt as literal when compiling)
   defPrim("'", (vm) => {
@@ -685,3 +732,8 @@ F.eval(`
 : hi  ." ciao da dentro una colon" ;
 hi
 `);
+F.eval(`
+: foo  111 . ;
+immediate foo`);
+F.eval(`: ten  [ 7 3 + ] literal ;
+ten . `)
