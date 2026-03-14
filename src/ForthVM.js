@@ -34,6 +34,12 @@ function makeVM() {
     let ip = 0;
     while (ip < code.length) {
       const op = code[ip++];
+
+      if (typeof op !== "function") {
+        const at = ip - 1;
+        throw new Error(`Bad instruction at ip=${at}: ${String(op)}`);
+      }
+
       if (op.length <= 1) op(vm);
       else op(vm, code, () => ip, (v) => { ip = v; });
     }
@@ -297,6 +303,46 @@ function makeVM() {
     compileTarget[addr] = compileTarget.length;
   }, true);
 
+    // sugar: compile branch + placeholder and return placeholder address
+  defPrim(">mark1", (vm) => {
+    if (!compiling) throw new Error(">mark1 outside compilation");
+    compileOp(OP.branch);
+    const addr = compileTarget.length;
+    compileTarget.push(0);
+    vm.push(addr);
+  }, true);
+
+  defPrim(">resolve1", (vm) => {
+    if (!compiling) throw new Error(">resolve1 outside compilation");
+    const addr = vm.pop();
+    if ((addr|0) !== addr || addr < 0 || addr >= compileTarget.length) {
+      throw new Error(">resolve1: bad address");
+    }
+    compileTarget[addr] = compileTarget.length;
+  }, true);
+
+    // c-here ( -- addr ) address in current colon definition (compile position)
+  defPrim("c-here", (vm) => {
+    if (!compiling) throw new Error("c-here outside compilation");
+    vm.push(compileTarget.length);
+  });
+
+  // c-branch ( addr -- ) compile an unconditional branch to addr
+  defPrim("c-branch", (vm) => {
+    if (!compiling) throw new Error("c-branch outside compilation");
+    const target = vm.pop();
+    compileOp(OP.branch);
+    compileTarget.push(target);
+  });
+
+  // c-0branch ( addr -- ) compile a 0branch to addr
+  defPrim("c-0branch", (vm) => {
+    if (!compiling) throw new Error("c-0branch outside compilation");
+    const target = vm.pop();
+    compileOp(OP.zbranch);
+    compileTarget.push(target);
+  });
+
   // tick: ' name  ( -- xt )  (compiles xt as literal when compiling)
   defPrim("'", (vm) => {
     const name = vm.nextToken();
@@ -422,6 +468,7 @@ function makeVM() {
   defPrim("=", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a===b ? 1 : 0); });
   defPrim("0=", (vm) => { const a=vm.pop(); vm.push(a===0 ? 1 : 0); });
   defPrim("0<", (vm) => { const a=vm.pop(); vm.push(a < 0 ? 1 : 0); });
+  defPrim("0>", (vm) => { const a=vm.pop(); vm.push(a > 0 ? 1 : 0); });
   defPrim("<", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a < b ? 1 : 0); });
   defPrim(">", (vm) => { const b=vm.pop(), a=vm.pop(); vm.push(a > b ? 1 : 0); });
 
@@ -504,46 +551,6 @@ function makeVM() {
     vm.dict.set(name, w);
   });
 
-  // Control flow (immediate compile-time words)
-  // if ... then  => zbranch <patch> ... <patch target>
-  defPrim("if", (vm) => {
-    if (!compiling) throw new Error("if outside compilation");
-    compileOp(OP.zbranch);
-    const addr = current.code.length;
-    current.code.push(0);               // placeholder target for 0branch
-    control.push({ kind: "if", addr }); // addr points to placeholder cell
-  }, true);
-
-  defPrim("else", (vm) => {
-    if (!compiling) throw new Error("else outside compilation");
-
-    const c = control.pop();
-    if (!c || c.kind !== "if") throw new Error("else without if");
-
-    // compile unconditional branch to skip the ELSE-part
-    compileOp(OP.branch);
-    const addr = current.code.length;
-    current.code.push(0);                 // placeholder target for branch
-
-    // patch IF's 0branch to jump here (start of ELSE-part)
-    current.code[c.addr] = current.code.length;
-
-    // remember the branch placeholder to be patched by THEN
-    control.push({ kind: "else", addr });
-  }, true);
-
-  defPrim("then", (vm) => {
-    if (!compiling) throw new Error("then outside compilation");
-
-    const c = control.pop();
-    if (!c || (c.kind !== "if" && c.kind !== "else")) {
-      throw new Error("then without if/else");
-    }
-
-    // patch the most recent placeholder (IF's 0branch or ELSE's branch)
-    current.code[c.addr] = current.code.length;
-  }, true);
-
   function takeForthStringToken(vm, who) {
     const t = vm.nextToken();
     const p = "\u0000STR:";
@@ -589,7 +596,7 @@ function makeVM() {
     doesBuf = [];
     compileTarget = doesBuf;
   }, true);
-
+/*
   defPrim("begin", (vm) => {
     if (!compiling) throw new Error("begin outside compilation");
     control.push({ kind:"begin", addr: current.code.length });
@@ -602,7 +609,7 @@ function makeVM() {
     compileOp(OP.zbranch);
     current.code.push(c.addr); // if flag==0 jump back
   }, true);
-
+*/
   // ---- Outer interpreter (tokenizer + : ;) ----
   function tokenize(src) {
     const tokens = [];
@@ -727,6 +734,7 @@ function makeVM() {
 }
 
 // Demo
+if(0){
 const F = makeVM();
 F.eval(`: sq dup * ; 5 sq .`);
 F.eval(`: 1- 1 - ; : countDown begin dup . 1- dup 0= until drop ; 5 countDown`);
@@ -783,4 +791,38 @@ F.eval(String.raw`
   112 .         \ true-branch body
   >resolve0     \ patcha target a qui (salto)
 ;
-t`)
+t`);
+}
+const F2 = makeVM();
+F2.eval(String.raw`
+: if    postpone >mark0 ; immediate
+
+: then  postpone >resolve0 ; immediate
+
+: else  postpone >mark1  postpone swap  postpone >resolve0 ; immediate
+`);
+F2.eval(`
+  : t1  1 if 110 . then ;
+: t0  0 if 111 . then ;
+t1
+t0
+
+: t2  1 if 112 . else 212 . then ;
+: t3  0 if 113 . else 223 . then ;
+t2
+t3
+  `);
+F2.eval(String.raw`
+: begin   c-here ; immediate
+: until   c-0branch ; immediate
+: again   c-branch ; immediate
+
+`);
+
+  F2.eval(`
+: countdown
+  begin dup . 1- dup 0= until
+  drop
+;
+5 countdown
+    `);
