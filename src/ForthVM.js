@@ -133,15 +133,38 @@ function makeVM() {
     if (!compiling) throw new Error("if outside compilation");
     compileOp(OP.zbranch);
     const addr = current.code.length;
-    current.code.push(0);     // placeholder target
-    control.push({ kind:"if", addr });
+    current.code.push(0);               // placeholder target for 0branch
+    control.push({ kind: "if", addr }); // addr points to placeholder cell
+  }, true);
+
+  defPrim("else", (vm) => {
+    if (!compiling) throw new Error("else outside compilation");
+
+    const c = control.pop();
+    if (!c || c.kind !== "if") throw new Error("else without if");
+
+    // compile unconditional branch to skip the ELSE-part
+    compileOp(OP.branch);
+    const addr = current.code.length;
+    current.code.push(0);                 // placeholder target for branch
+
+    // patch IF's 0branch to jump here (start of ELSE-part)
+    current.code[c.addr] = current.code.length;
+
+    // remember the branch placeholder to be patched by THEN
+    control.push({ kind: "else", addr });
   }, true);
 
   defPrim("then", (vm) => {
     if (!compiling) throw new Error("then outside compilation");
+
     const c = control.pop();
-    if (!c || c.kind !== "if") throw new Error("then without if");
-    current.code[c.addr] = current.code.length; // patch target to here
+    if (!c || (c.kind !== "if" && c.kind !== "else")) {
+      throw new Error("then without if/else");
+    }
+
+    // patch the most recent placeholder (IF's 0branch or ELSE's branch)
+    current.code[c.addr] = current.code.length;
   }, true);
 
   defPrim("begin", (vm) => {
@@ -190,3 +213,5 @@ function makeVM() {
 const F = makeVM();
 F.eval(`: sq dup * ; 5 sq .`);
 F.eval(`: 1- 1 - ; : countDown begin dup . 1- dup 0= until drop ; 5 countDown`);
+// F.eval(`: abs dup 0< if negate then ;`);
+// F.eval(`: sign dup 0= if drop 0 else 0< if -1 else 1 then then ;`);
